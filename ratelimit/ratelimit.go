@@ -1,4 +1,4 @@
-// Package security contains HTTP security primitives.
+// Package ratelimit provides bounded per-key token-bucket budgets.
 package ratelimit
 
 import "time"

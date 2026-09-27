@@ -19,5 +19,5 @@ commands, or policy. Applications construct those at their own boundaries.
 `logging` redaction is defense in depth; callers should omit secret values
 from telemetry entirely.
 
-Install a tagged version with `go get github.com/rofleksey/meg@v0.1.0`.
+Install a tagged version with `go get github.com/rofleksey/meg@v0.1.1`.
 Run `go test ./...` and `go vet ./...` before releasing a change.

@@ -5,10 +5,9 @@ import (
 	"time"
 )
 
-// Limiter is a bounded per-key token-bucket limiter. It is deliberately local
-// to one process: it protects the public HTTP boundary without making
-// availability depend on a shared cache. Deployments that run more than one
-// control-plane replica should also apply an equivalent edge rate limit.
+// Limiter is a bounded per-key token-bucket limiter local to one process.
+// Applications with multiple replicas must enforce a shared or upstream
+// budget when they need a global limit.
 type Limiter struct {
 	mu      sync.Mutex
 	max     int
