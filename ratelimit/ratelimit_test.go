@@ -1,6 +1,8 @@
 package ratelimit
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -28,6 +30,51 @@ func TestLimiterSeparatesKeysAndRefillsTokens(t *testing.T) {
 
 	if ok, _ := limiter.Allow("client-a"); !ok {
 		t.Fatal("token was not refilled")
+	}
+}
+
+func TestConcurrentRequestsShareOneBudget(t *testing.T) {
+	const budget = 10
+
+	limiter := NewLimiter(budget, time.Minute)
+	limiter.now = func() time.Time { return time.Unix(0, 0) }
+
+	var (
+		allowed atomic.Int32
+		workers sync.WaitGroup
+	)
+
+	for range 100 {
+		workers.Go(func() {
+			if ok, _ := limiter.Allow("same-client"); ok {
+				allowed.Add(1)
+			}
+		})
+	}
+
+	workers.Wait()
+
+	if got := allowed.Load(); got != budget {
+		t.Fatalf("allowed %d concurrent requests, want %d", got, budget)
+	}
+}
+
+func TestRejectedRequestsDoNotPostponeRefill(t *testing.T) {
+	limiter := NewLimiter(1, time.Second)
+	now := time.Unix(0, 0)
+	limiter.now = func() time.Time { return now }
+	limiter.Allow("client")
+
+	for range 10 {
+		if ok, retry := limiter.Allow("client"); ok || retry != time.Second {
+			t.Fatalf("repeated rejection = (%v, %s), want (false, 1s)", ok, retry)
+		}
+	}
+
+	now = now.Add(time.Second)
+
+	if ok, _ := limiter.Allow("client"); !ok {
+		t.Fatal("rejected requests postponed the next available token")
 	}
 }
 

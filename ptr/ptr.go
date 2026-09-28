@@ -10,5 +10,6 @@ func Value[T any](pointer *T) T {
 		var zero T
 		return zero
 	}
+
 	return *pointer
 }

@@ -3,20 +3,23 @@ package process
 
 import (
 	"errors"
-	"sync"
 	"time"
 )
 
 const processExitGrace = 2 * time.Second
 
-var ErrOutputLimit = errors.New("process output limit reached")
+var (
+	ErrInvalidRequest = errors.New("invalid process request")
+	ErrOutputLimit    = errors.New("process output limit reached")
+)
 
 // Request must be constructed from trusted local application policy.
 type Request struct {
-	Executable  string
-	Arguments   []string
-	Directory   string
-	Timeout     time.Duration
+	Executable string
+	Arguments  []string
+	Directory  string
+	Timeout    time.Duration
+	// OutputLimit is the maximum number of bytes retained per output stream.
 	OutputLimit int
 }
 
@@ -24,13 +27,15 @@ type Result struct {
 	Stdout    []byte
 	Stderr    []byte
 	Truncated bool
-	ExitCode  int
+	// ExitCode is the direct child's observed exit status, or -1 if it did not
+	// start or was terminated by a signal. A zero status does not imply no error:
+	// output can be truncated or a descendant can prevent output draining.
+	ExitCode int
 }
 
 type Runner struct{}
 
 type limitedBuffer struct {
-	mu        sync.Mutex
 	bytes     []byte
 	limit     int
 	truncated bool

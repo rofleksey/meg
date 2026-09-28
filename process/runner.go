@@ -3,93 +3,78 @@ package process
 import (
 	"context"
 	"errors"
-	"io"
 	"os/exec"
-	"sync"
-	"time"
 )
 
-// Run captures bounded stdout and stderr and waits for process-tree cleanup
-// before returning on cancellation.
+// Run captures up to OutputLimit bytes from each output stream. Excess output
+// is discarded while the command continues; ErrOutputLimit is joined with any
+// execution error, so errors.Is and errors.As can inspect both failures.
+//
+// Cancellation signals the process group on Linux and kills the direct child on
+// other platforms. After a two-second grace period, the child is killed and
+// inherited output pipes are closed. Remaining Linux process-group members are
+// also killed after normal child exit. Descendants that escape the group, and
+// descendants on other platforms, cannot be terminated by this runner.
 func (Runner) Run(ctx context.Context, request Request) (Result, error) {
 	if request.Executable == "" || request.Directory == "" || request.Timeout <= 0 || request.OutputLimit <= 0 {
-		return Result{}, errors.New("invalid process request")
+		return Result{ExitCode: -1}, ErrInvalidRequest
 	}
+
 	operationCtx, cancel := context.WithTimeout(ctx, request.Timeout)
 	defer cancel()
 
-	// CommandContext would kill only the direct child before callers can
-	// perform action-specific cleanup, so lifecycle control stays here.
-	cmd := exec.Command(request.Executable, request.Arguments...)
-	cmd.Dir = request.Directory
-	configureProcess(cmd)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return Result{}, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return Result{}, err
-	}
-	if err := cmd.Start(); err != nil {
-		return Result{}, err
-	}
-
 	out := limitedBuffer{limit: request.OutputLimit}
 	errOut := limitedBuffer{limit: request.OutputLimit}
-	var readers sync.WaitGroup
-	readers.Add(2)
-	go func() { defer readers.Done(); _, _ = io.Copy(&out, stdout) }()
-	go func() { defer readers.Done(); _, _ = io.Copy(&errOut, stderr) }()
-	finished := make(chan error, 1)
-	go func() { finished <- cmd.Wait() }()
+	// Request contains trusted application policy, never a shell command string.
+	//nolint:gosec // Executable and argv are deliberately supplied by the trusted caller.
+	cmd := exec.CommandContext(operationCtx, request.Executable, request.Arguments...)
+	cmd.Dir = request.Directory
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
+	// Cmd owns and drains the copy goroutines before Wait returns. WaitDelay
+	// bounds that drain if a descendant retains stdout or stderr after exit.
+	cmd.WaitDelay = processExitGrace
+	runErr := runProcess(cmd)
 
-	var runErr error
-	select {
-	case runErr = <-finished:
-	case <-operationCtx.Done():
-		_ = interruptProcess(cmd)
-		select {
-		case <-finished:
-		case <-time.After(processExitGrace):
-			_ = killProcess(cmd)
-			<-finished
-		}
-		runErr = operationCtx.Err()
+	if err := operationCtx.Err(); err != nil && !errors.Is(runErr, err) {
+		runErr = errors.Join(err, runErr)
 	}
-	readers.Wait()
-	result := Result{Stdout: out.Bytes(), Stderr: errOut.Bytes(), Truncated: out.Truncated() || errOut.Truncated(), ExitCode: exitCode(runErr)}
+
+	result := Result{
+		Stdout: out.Bytes(), Stderr: errOut.Bytes(),
+		Truncated: out.Truncated() || errOut.Truncated(),
+		ExitCode:  cmd.ProcessState.ExitCode(),
+	}
 	if result.Truncated {
-		return result, ErrOutputLimit
+		runErr = errors.Join(ErrOutputLimit, runErr)
 	}
+
 	return result, runErr
 }
 
 func (b *limitedBuffer) Write(value []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	remaining := b.limit - len(b.bytes)
 	if remaining <= 0 {
-		b.truncated = true
+		b.truncated = b.truncated || len(value) > 0
 		return len(value), nil
 	}
+
 	if len(value) > remaining {
 		b.bytes = append(b.bytes, value[:remaining]...)
 		b.truncated = true
+
 		return len(value), nil
 	}
+
 	b.bytes = append(b.bytes, value...)
+
 	return len(value), nil
 }
 
 func (b *limitedBuffer) Bytes() []byte {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	return append([]byte(nil), b.bytes...)
 }
 
 func (b *limitedBuffer) Truncated() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	return b.truncated
 }

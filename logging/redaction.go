@@ -29,6 +29,7 @@ func (handler *RedactingHandler) Handle(ctx context.Context, record slog.Record)
 		redacted.AddAttrs(redactAttr(handler.group, attr))
 		return true
 	})
+
 	return handler.next.Handle(ctx, redacted)
 }
 
@@ -37,6 +38,7 @@ func (handler *RedactingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for index := range attrs {
 		redacted[index] = redactAttr(handler.group, attrs[index])
 	}
+
 	return &RedactingHandler{next: handler.next.WithAttrs(redacted), group: handler.group}
 }
 
@@ -45,6 +47,7 @@ func (handler *RedactingHandler) WithGroup(name string) slog.Handler {
 	if handler.group != "" {
 		group = handler.group + "." + name
 	}
+
 	return &RedactingHandler{next: handler.next.WithGroup(name), group: group}
 }
 
@@ -52,18 +55,25 @@ func redactAttr(group string, attr slog.Attr) slog.Attr {
 	if attr.Equal(slog.Attr{}) {
 		return attr
 	}
+
 	qualified := strings.ToLower(strings.Trim(strings.Join([]string{group, attr.Key}, "."), "."))
 	if sensitiveKey(qualified) {
 		return slog.String(attr.Key, redactedValue)
 	}
+	// Resolve lazy values before inspecting groups so their nested fields cannot
+	// bypass redaction when the wrapped handler resolves them later.
+	attr.Value = attr.Value.Resolve()
 	if attr.Value.Kind() == slog.KindGroup {
 		members := attr.Value.Group()
-		values := make([]any, len(members))
+
+		values := make([]slog.Attr, len(members))
 		for index := range members {
 			values[index] = redactAttr(qualified, members[index])
 		}
-		return slog.Group(attr.Key, values...)
+
+		attr.Value = slog.GroupValue(values...)
 	}
+
 	return attr
 }
 
@@ -73,5 +83,6 @@ func sensitiveKey(key string) bool {
 			return true
 		}
 	}
+
 	return false
 }

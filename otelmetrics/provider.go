@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -19,6 +20,8 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 )
 
+const initializationCleanupTimeout = 5 * time.Second
+
 type Provider struct {
 	meterProvider metric.MeterProvider
 	sdk           *sdkmetric.MeterProvider
@@ -28,6 +31,7 @@ func (provider *Provider) MeterProvider() metric.MeterProvider {
 	if provider == nil {
 		return noop.NewMeterProvider()
 	}
+
 	return provider.meterProvider
 }
 
@@ -38,17 +42,21 @@ func Open(ctx context.Context, serviceName string) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if !enabled {
 		return Disabled(), nil
 	}
+	// Validate the resource before creating an exporter that needs cleanup.
+	service, err := serviceResource(ctx, serviceName)
+	if err != nil {
+		return nil, fmt.Errorf("create metrics resource: %w", err)
+	}
+
 	exporter, err := otlpmetrichttp.New(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("create OTLP metrics exporter: %w", err)
 	}
-	service, err := serviceResource(serviceName)
-	if err != nil {
-		return nil, fmt.Errorf("create metrics resource: %w", err)
-	}
+
 	sdk := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter,
 			sdkmetric.WithInterval(exportDuration("OTEL_METRIC_EXPORT_INTERVAL", 30*time.Second)),
@@ -57,9 +65,10 @@ func Open(ctx context.Context, serviceName string) (*Provider, error) {
 		sdkmetric.WithResource(service),
 	)
 	if err := otelruntime.Start(otelruntime.WithMeterProvider(sdk), otelruntime.WithMinimumReadMemStatsInterval(15*time.Second)); err != nil {
-		_ = sdk.Shutdown(context.Background())
-		return nil, fmt.Errorf("start Go runtime metrics: %w", err)
+		cleanupErr := cleanupInitialization(ctx, sdk.Shutdown)
+		return nil, errors.Join(fmt.Errorf("start Go runtime metrics: %w", err), cleanupErr)
 	}
+
 	return &Provider{meterProvider: sdk, sdk: sdk}, nil
 }
 
@@ -71,6 +80,7 @@ func (provider *Provider) Shutdown(ctx context.Context) error {
 	if provider == nil || provider.sdk == nil {
 		return nil
 	}
+
 	return provider.sdk.Shutdown(ctx)
 }
 
@@ -92,13 +102,33 @@ func exportDuration(name string, fallback time.Duration) time.Duration {
 	if raw == "" {
 		return fallback
 	}
+
 	milliseconds, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || milliseconds <= 0 {
+	if err != nil || milliseconds <= 0 || milliseconds > math.MaxInt64/int64(time.Millisecond) {
 		return fallback
 	}
+
 	return time.Duration(milliseconds) * time.Millisecond
 }
 
-func serviceResource(serviceName string) (*resource.Resource, error) {
-	return resource.Merge(resource.Default(), resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(serviceName)))
+func serviceResource(ctx context.Context, serviceName string) (*resource.Resource, error) {
+	// Build per provider instead of using resource.Default's process-wide cache.
+	// The caller's service name continues to take precedence over the environment.
+	return resource.New(ctx,
+		resource.WithFromEnv(),
+		resource.WithTelemetrySDK(),
+		resource.WithAttributes(semconv.ServiceName(serviceName)),
+		resource.WithSchemaURL(semconv.SchemaURL),
+	)
+}
+
+func cleanupInitialization(ctx context.Context, shutdown func(context.Context) error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), initializationCleanupTimeout)
+	defer cancel()
+
+	if err := shutdown(cleanupCtx); err != nil {
+		return fmt.Errorf("clean up metrics initialization: %w", err)
+	}
+
+	return nil
 }

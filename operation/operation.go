@@ -27,6 +27,7 @@ func NewRuntime(logger *slog.Logger) *unolog.Runtime {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
+
 	return unolog.MustCompile(unolog.Config{
 		Sink:         unologslog.New(logger),
 		SamplingRate: 1,
@@ -37,6 +38,7 @@ func Start(ctx context.Context, runtime *unolog.Runtime, domain unolog.Domain, n
 	op := unolog.Start(ctx, runtime, unolog.OperationStart{Domain: domain, Name: name, ID: id})
 	Enrich(op.Context(), FieldEvent, name)
 	Enrich(op.Context(), fields...)
+
 	return op
 }
 
@@ -54,6 +56,7 @@ func RecordError(ctx context.Context, err error) {
 	if err == nil {
 		return
 	}
+
 	kind := ErrorKind(err)
 	Enrich(ctx, FieldErrorKind, kind)
 	unolog.Error(ctx, safeEventError{kind: kind})
@@ -64,12 +67,15 @@ func ErrorKind(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return "canceled"
 	}
+
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "deadline_exceeded"
 	}
+
 	if typ := reflect.TypeOf(err); typ != nil {
 		return typ.String()
 	}
+
 	return "unknown"
 }
 
@@ -79,16 +85,21 @@ func Complete(op *unolog.Operation, outcome string, err error) {
 	if op == nil {
 		return
 	}
+
 	ctx := op.Context()
 	Enrich(ctx, FieldOutcome, outcome)
+
 	canonical := unolog.OutcomeFailure
+
 	switch outcome {
 	case "succeeded":
 		canonical = unolog.OutcomeSuccess
 	case "canceled":
 		canonical = unolog.OutcomeCanceled
 	}
+
 	unolog.Add(ctx, unolog.KeyOpOutcome, string(canonical))
 	RecordError(ctx, err)
+
 	_ = op.End(nil)
 }
