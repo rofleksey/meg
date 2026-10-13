@@ -2,7 +2,7 @@
 
 meg provides reusable Go infrastructure for services and command-line programs.
 Keep packages independently importable and focused on their public contracts.
-Current integration targets are Akio Main, Akio Agent, and Serega.
+Current integration targets are Akio Main and Akio Agent.
 
 ## Ownership and API design
 

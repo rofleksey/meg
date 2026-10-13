@@ -14,8 +14,8 @@ separate imports so value helpers do not pull the telemetry stack into a build.
 | [process](process) | Bounded execution of trusted commands without a shell |
 
 Applications own routes, error envelopes, metric names, authorization, command
-allowlists, and domain policy. Supported integration targets are Akio Main,
-Akio Agent, and Serega.
+allowlists, and domain policy. Supported integration targets are Akio Main
+and Akio Agent.
 
 ## Use
 
